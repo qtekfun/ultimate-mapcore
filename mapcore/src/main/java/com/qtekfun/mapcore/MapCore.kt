@@ -62,4 +62,18 @@ data class CameraState(
     val zoom: Double,
     val bearing: Double = 0.0,
     val tilt: Double = 0.0,
+    val padding: CameraPadding? = null,
 )
+
+/**
+ * Camera padding in pixels: the part of the map view that is covered by UI (a bottom sheet, a
+ * banner). The camera centre is the centre of the area that is NOT padded, which is how a
+ * navigation view puts the vehicle in the lower third of the screen. A null padding in a
+ * [CameraState] or in a camera call leaves the current padding unchanged; [CameraPadding.NONE]
+ * clears it.
+ */
+data class CameraPadding(val left: Double, val top: Double, val right: Double, val bottom: Double) {
+    companion object {
+        val NONE = CameraPadding(0.0, 0.0, 0.0, 0.0)
+    }
+}
