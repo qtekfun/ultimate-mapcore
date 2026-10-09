@@ -77,6 +77,13 @@ class UltimateMapEngine(context: Context, tilesDir: File) {
     private var theme: MapTheme = MapTheme.DARK
 
     private var tapListener: ((LatLon) -> Unit)? = null
+    private var mapReadyListener: ((MapLibreMap, Style) -> Unit)? = null
+    private var cameraGestureListener: (() -> Unit)? = null
+    private var cameraIdleListener: (() -> Unit)? = null
+
+    // Which style is applied. Default = the packaged PMTiles multi-region style; a consumer may swap
+    // in its own JSON or URI. reloadStyle()/refreshTiles() reapply whatever is active here.
+    private var styleSource: StyleSource = StyleSource.DefaultMultiRegion
 
     // Pending data applied once the style is ready (and re-applied after a theme change).
     private var pendingLine: List<LatLon> = emptyList()
@@ -88,6 +95,23 @@ class UltimateMapEngine(context: Context, tilesDir: File) {
     private var baseLogoBottom = -1
     private var baseAttrBottom = -1
 
+    /**
+     * The underlying MapLibre map, or null until the map finishes creating. Exposed so a consumer
+     * (e.g. UltimateMaps navigation) can drive the SDK directly — add its OWN sources and layers
+     * (alternative routes, transport, chargers, bike-share, ZBE polygons, 3D buildings as a
+     * fill-extrusion layer, …), read gestures, etc. Prefer [onMapReady] when you need to (re)add
+     * layers after every style (re)load; use this for one-off reads. Main thread only.
+     */
+    val mapLibreMap: MapLibreMap? get() = map
+
+    /**
+     * The current loaded [Style], or null until a style finishes loading. Add your fill-extrusion
+     * (3D buildings), custom sources/layers and images here. It becomes invalid after every theme
+     * change, [setStyle], [reloadStyle] or [refreshTiles], so use [onMapReady] to re-add your layers
+     * each time a new style loads. Main thread only.
+     */
+    val currentStyle: Style? get() = style
+
     init {
         MapLibre.getInstance(appContext)
         view = MapView(appContext)
@@ -95,15 +119,55 @@ class UltimateMapEngine(context: Context, tilesDir: File) {
             if (closed) return@getMapAsync
             map = m
             applyChromeInset(m)
+            // Rotate and tilt gestures are needed for navigation; MapLibre enables them by default
+            // but we set them explicitly so the base shared view always allows them.
+            m.uiSettings.isRotateGesturesEnabled = true
+            m.uiSettings.isTiltGesturesEnabled = true
             m.addOnMapClickListener { p ->
                 tapListener?.invoke(LatLon(p.latitude, p.longitude))
                 tapListener != null
             }
+            // A user-driven camera gesture (so navigation can stop following and offer "recenter").
+            m.addOnCameraMoveStartedListener { reason ->
+                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                    cameraGestureListener?.invoke()
+                }
+            }
+            // The camera settled (useful to refresh the visible viewport / reload layers).
+            m.addOnCameraIdleListener { cameraIdleListener?.invoke() }
             loadStyle()
         }
     }
 
     fun onMapTap(cb: ((LatLon) -> Unit)?) { tapListener = cb }
+
+    /**
+     * Fired every time a style finishes loading — on first load and after each theme change,
+     * [setStyle], [reloadStyle] or [refreshTiles]. This is the hook for a consumer to (re)add its
+     * OWN sources, layers and images (3D buildings fill-extrusion, alternative routes, chargers,
+     * bike-share, ZBE polygons, …): because a style reload drops every custom layer, re-adding them
+     * here keeps them alive across reloads. The core's own route/track/marker/user layers are added
+     * before this callback runs, so consumer layers sit on top of them. Pass null to clear.
+     */
+    fun onMapReady(cb: ((MapLibreMap, Style) -> Unit)?) {
+        mapReadyListener = cb
+        val m = map
+        val s = style
+        if (cb != null && m != null && s != null && s.isFullyLoaded) cb(m, s)
+    }
+
+    /**
+     * Reports when the USER starts moving the camera with a gesture (not animations the app asked
+     * for), so a navigation screen can stop following and offer "recenter". Called once per gesture
+     * start; pass null to clear.
+     */
+    fun onCameraGesture(cb: (() -> Unit)?) { cameraGestureListener = cb }
+
+    /**
+     * Reports when the camera settles after any move (gesture or animation). Read [cameraState] in
+     * the callback to refresh the visible viewport or reload viewport-bound layers. Pass null to clear.
+     */
+    fun onCameraIdle(cb: (() -> Unit)?) { cameraIdleListener = cb }
 
     /**
      * Lift the native MapLibre logo + attribution above a bottom system inset (e.g. the
@@ -129,16 +193,141 @@ class UltimateMapEngine(context: Context, tilesDir: File) {
     fun setTheme(newTheme: MapTheme) {
         if (theme == newTheme) return
         theme = newTheme
+        // A theme change only re-renders when the default packaged style is active; a custom style
+        // chosen by the consumer owns its own day/night handling.
+        if (map != null && styleSource == StyleSource.DefaultMultiRegion) loadStyle()
+    }
+
+    /**
+     * Load an ARBITRARY style from a JSON string, replacing the packaged PMTiles multi-region style.
+     * The consumer owns the sprites/glyphs/sources this style references. The core's route/track/
+     * marker/user layers are re-added on top and [onMapReady] fires once loaded. Call [setDefaultStyle]
+     * to return to the packaged style.
+     */
+    fun setStyle(json: String) {
+        styleSource = StyleSource.CustomJson(json)
         if (map != null) loadStyle()
     }
 
-    fun setCamera(center: LatLon, zoom: Double) {
-        map?.moveCamera(
-            CameraUpdateFactory.newCameraPosition(
-                CameraPosition.Builder().target(LatLng(center.lat, center.lon)).zoom(zoom).build(),
-            ),
-        )
+    /**
+     * Load an arbitrary style from a URI (`file://`, `asset://`, `http(s)://`, `mapbox://`/`maplibre://`),
+     * replacing the packaged style. See [setStyle] for the layer/lifecycle contract.
+     */
+    fun setStyleUri(uri: String) {
+        styleSource = StyleSource.CustomUri(uri)
+        if (map != null) loadStyle()
     }
+
+    /** Return to the packaged PMTiles multi-region style (the default) after a custom [setStyle]/[setStyleUri]. */
+    fun setDefaultStyle() {
+        styleSource = StyleSource.DefaultMultiRegion
+        if (map != null) loadStyle()
+    }
+
+    /**
+     * Reapply the current style from scratch (packaged or custom). Use it when the inputs changed
+     * under the engine — e.g. the consumer edited the custom style JSON, or new `.pmtiles` regions
+     * were installed — and the map must pick them up. Any custom layers must be re-added in
+     * [onMapReady], which fires again when the reload completes.
+     */
+    fun reloadStyle() {
+        if (map != null) loadStyle()
+    }
+
+    /**
+     * Refresh the tiles of the packaged multi-region style, picking up `.pmtiles` regions that were
+     * added, replaced or removed in `tilesDir`. Equivalent to [reloadStyle] while the default style
+     * is active; a no-op for a custom style (the consumer controls its own sources there).
+     */
+    fun refreshTiles() {
+        if (map != null && styleSource == StyleSource.DefaultMultiRegion) loadStyle()
+    }
+
+    fun setCamera(center: LatLon, zoom: Double) {
+        map?.moveCamera(CameraUpdateFactory.newCameraPosition(cameraPosition(center, zoom, null, null)))
+    }
+
+    /**
+     * Instantly move the full navigation camera: [center] + [zoom] plus optional [bearing] (degrees
+     * clockwise from north, 0 = north up) and [tilt] (pitch, 0 = flat, up to 60 for the 3D driving
+     * view). Null bearing/tilt keep the current value. No animation (safe to call every GNSS frame).
+     */
+    fun setCamera(center: LatLon, zoom: Double, bearing: Double? = null, tilt: Double? = null) {
+        map?.moveCamera(CameraUpdateFactory.newCameraPosition(cameraPosition(center, zoom, bearing, tilt)))
+    }
+
+    /** Instantly move to a full [CameraState]. */
+    fun setCamera(state: CameraState) = setCamera(state.center, state.zoom, state.bearing, state.tilt)
+
+    /**
+     * Flight-style animated move to the given camera (MapLibre `animateCamera`): accelerates, arcs
+     * out and settles. Good for a one-off "fly to" to a place or route. [durationMs] is the animation
+     * length. Null bearing/tilt keep the current value.
+     */
+    fun animateCamera(center: LatLon, zoom: Double, bearing: Double? = null, tilt: Double? = null, durationMs: Int = 600) {
+        map?.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition(center, zoom, bearing, tilt)), durationMs)
+    }
+
+    /** Flight-style animated move to a full [CameraState]. */
+    fun animateCamera(state: CameraState, durationMs: Int = 600) =
+        animateCamera(state.center, state.zoom, state.bearing, state.tilt, durationMs)
+
+    /** Alias for [animateCamera]: the flight ("fly to") animation. */
+    fun flyTo(state: CameraState, durationMs: Int = 600) = animateCamera(state, durationMs)
+
+    /**
+     * Ease (constant ground speed) animated move to the given camera (MapLibre `easeCamera`). Smoother
+     * than [animateCamera] for the short, frequent camera nudges of turn-by-turn following.
+     * Null bearing/tilt keep the current value.
+     */
+    fun easeCamera(center: LatLon, zoom: Double, bearing: Double? = null, tilt: Double? = null, durationMs: Int = 500) {
+        map?.easeCamera(CameraUpdateFactory.newCameraPosition(cameraPosition(center, zoom, bearing, tilt)), durationMs)
+    }
+
+    /** Ease animated move to a full [CameraState]. */
+    fun easeCamera(state: CameraState, durationMs: Int = 500) =
+        easeCamera(state.center, state.zoom, state.bearing, state.tilt, durationMs)
+
+    /** Alias for [easeCamera], matching the common `easeTo` naming. */
+    fun easeTo(state: CameraState, durationMs: Int = 500) = easeCamera(state, durationMs)
+
+    /** Current full camera state (centre, zoom, bearing, tilt), or null before the map is ready. */
+    fun cameraState(): CameraState? {
+        val p = map?.cameraPosition ?: return null
+        val t = p.target ?: return null
+        return CameraState(LatLon(t.latitude, t.longitude), p.zoom, p.bearing, p.tilt)
+    }
+
+    /** Current camera centre + zoom, or null before the map is ready. */
+    fun camera(): Pair<LatLon, Double>? = cameraState()?.let { it.center to it.zoom }
+
+    /** Animate bearing and tilt back to north-up / flat, keeping the current centre and zoom. */
+    fun resetNorth(durationMs: Int = 300) {
+        val s = cameraState() ?: return
+        easeCamera(s.copy(bearing = 0.0, tilt = 0.0), durationMs)
+    }
+
+    /** Enable/disable the pan (scroll) gesture. */
+    fun setScrollGesturesEnabled(enabled: Boolean) { map?.uiSettings?.isScrollGesturesEnabled = enabled }
+
+    /** Enable/disable the pinch/double-tap zoom gestures. */
+    fun setZoomGesturesEnabled(enabled: Boolean) { map?.uiSettings?.isZoomGesturesEnabled = enabled }
+
+    /** Enable/disable the two-finger rotate gesture (bearing). */
+    fun setRotateGesturesEnabled(enabled: Boolean) { map?.uiSettings?.isRotateGesturesEnabled = enabled }
+
+    /** Enable/disable the two-finger vertical shove gesture (tilt/pitch). */
+    fun setTiltGesturesEnabled(enabled: Boolean) { map?.uiSettings?.isTiltGesturesEnabled = enabled }
+
+    /** Enable/disable scroll, zoom, rotate and tilt gestures in one call. */
+    fun setAllGesturesEnabled(enabled: Boolean) { map?.uiSettings?.setAllGesturesEnabled(enabled) }
+
+    private fun cameraPosition(center: LatLon, zoom: Double, bearing: Double?, tilt: Double?): CameraPosition =
+        CameraPosition.Builder()
+            .target(LatLng(center.lat, center.lon))
+            .zoom(zoom)
+            .apply { bearing?.let { bearing(it) }; tilt?.let { tilt(it) } }
+            .build()
 
     /** Draw the route/track line (and nothing else). */
     fun drawRoute(points: List<LatLon>) { pendingLine = points; pushLine() }
@@ -168,19 +357,29 @@ class UltimateMapEngine(context: Context, tilesDir: File) {
 
     private fun loadStyle() {
         val m = map ?: return
-        if (files.isInstalled()) {
-            applyStyle(m)
-        } else {
-            Thread({
-                runCatching { files.install() }
-                main.post { if (!closed) map?.let { applyStyle(it) } }
-            }, "mapcore-assets").start()
+        when (val src = styleSource) {
+            StyleSource.DefaultMultiRegion ->
+                // The packaged style needs its sprites/glyphs copied out of the APK once (blocking IO).
+                if (files.isInstalled()) {
+                    applyStyle(m, defaultStyleBuilder())
+                } else {
+                    Thread({
+                        runCatching { files.install() }
+                        main.post { if (!closed) map?.let { applyStyle(it, defaultStyleBuilder()) } }
+                    }, "mapcore-assets").start()
+                }
+            is StyleSource.CustomJson -> applyStyle(m, Style.Builder().fromJson(src.json))
+            is StyleSource.CustomUri -> applyStyle(m, Style.Builder().fromUri(src.uri))
         }
     }
 
-    private fun applyStyle(m: MapLibreMap) {
-        val built = runCatching { files.style(theme) }.getOrNull() ?: return
-        m.setStyle(Style.Builder().fromJson(built.json)) { s ->
+    /** Builder for the packaged multi-region PMTiles style of the current theme, or null if it fails to build. */
+    private fun defaultStyleBuilder(): Style.Builder? =
+        runCatching { files.style(theme) }.getOrNull()?.let { Style.Builder().fromJson(it.json) }
+
+    private fun applyStyle(m: MapLibreMap, builder: Style.Builder?) {
+        if (builder == null) return
+        m.setStyle(builder) { s ->
             if (closed) return@setStyle
             style = s
             val dark = theme == MapTheme.DARK
@@ -220,6 +419,8 @@ class UltimateMapEngine(context: Context, tilesDir: File) {
             pushLine()
             pushMarkers()
             pushUser()
+            // Let the consumer (re)add its own sources/layers on top of the fresh style.
+            mapReadyListener?.invoke(m, s)
         }
     }
 
@@ -278,11 +479,21 @@ class UltimateMapEngine(context: Context, tilesDir: File) {
     }
 }
 
+/** Which style the engine renders: the packaged PMTiles multi-region style, or a consumer-supplied one. */
+private sealed interface StyleSource {
+    data object DefaultMultiRegion : StyleSource
+    data class CustomJson(val json: String) : StyleSource
+    data class CustomUri(val uri: String) : StyleSource
+}
+
 /**
  * Compose host for [UltimateMapEngine]. Forwards the Android lifecycle to the MapView and hands the
  * engine to [onReady] once created so the caller can draw routes/tracks and react to taps.
  *
  * @param tilesDir where `*.pmtiles` regions live (by convention `context.filesDir/maps`).
+ * @param onReady called once with the engine, for the simple viewer use (draw route, set camera, …).
+ * @param onMapReady optional access to the raw MapLibre map + style, re-fired after every style
+ *   (re)load, so a consumer (UltimateMaps navigation) can add and re-add its own sources/layers.
  */
 @Composable
 fun UltimateMapView(
@@ -290,6 +501,7 @@ fun UltimateMapView(
     tilesDir: File,
     theme: MapTheme = MapTheme.DARK,
     onReady: (UltimateMapEngine) -> Unit = {},
+    onMapReady: ((MapLibreMap, Style) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val engine = remember { UltimateMapEngine(context, tilesDir).also { it.setTheme(theme) } }
@@ -318,6 +530,7 @@ fun UltimateMapView(
             engine.onCreate(null)
             engine.onStart()
             engine.onResume()
+            onMapReady?.let { engine.onMapReady(it) }
             onReady(engine)
             engine.view
         },
