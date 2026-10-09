@@ -44,3 +44,22 @@ data class LatLon(val lat: Double, val lon: Double)
 
 /** The two packaged styles. */
 enum class MapTheme { DARK, LIGHT }
+
+/**
+ * Full camera state. Core-owned value type so the public API carries no MapLibre classes:
+ *
+ *  - [center] is the map centre.
+ *  - [zoom] is the MapLibre zoom level (0 = whole world).
+ *  - [bearing] is the map rotation in degrees clockwise from north (0 = north up).
+ *  - [tilt] is the camera pitch in degrees from straight down (0 = flat, up to 60 in navigation).
+ *
+ * It mirrors the fields of MapLibre's `CameraPosition` so a consumer's navigation camera can be
+ * expressed without importing the SDK. See [UltimateMapEngine.cameraState]/[UltimateMapEngine.setCamera]/
+ * [UltimateMapEngine.animateCamera]/[UltimateMapEngine.easeCamera].
+ */
+data class CameraState(
+    val center: LatLon,
+    val zoom: Double,
+    val bearing: Double = 0.0,
+    val tilt: Double = 0.0,
+)

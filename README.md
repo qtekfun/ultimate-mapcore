@@ -23,6 +23,7 @@ import com.qtekfun.mapcore.UltimateMapView   // @Composable host
 import com.qtekfun.mapcore.UltimateMapEngine  // setTheme/setCamera/fitTo, drawRoute/drawTrack, markers, setUserLocation, onMapTap, lifecycle hooks
 import com.qtekfun.mapcore.MyLocationButton   // @Composable FAB (LocationManager, no Play Services)
 import com.qtekfun.mapcore.LatLon             // geographic point
+import com.qtekfun.mapcore.CameraState        // center + zoom + bearing + tilt (navigation camera)
 import com.qtekfun.mapcore.MapTheme           // DARK / LIGHT
 ```
 
@@ -36,6 +37,102 @@ UltimateMapView(
         engine.fitTo(points)
     },
 )
+```
+
+The simple viewer API above is unchanged. Everything below is an **additive extension**
+layer for richer consumers (e.g. UltimateMaps navigation): a viewer that only draws a
+route, a track, markers and the user dot keeps working exactly as before.
+
+### Navigation camera (pitch, bearing, animation)
+
+```kotlin
+engine.setCamera(center, zoom, bearing = 90.0, tilt = 45.0)   // instant, 3D driving view (per GNSS frame)
+engine.easeCamera(CameraState(center, zoom, bearing, tilt), durationMs = 500)   // smooth follow (easeTo)
+engine.animateCamera(CameraState(center, zoom), durationMs = 800)               // flight ("fly to")
+engine.flyTo(state); engine.easeTo(state)                      // aliases for the two above
+
+val state: CameraState? = engine.cameraState()  // center, zoom, bearing, tilt
+val cz: Pair<LatLon, Double>? = engine.camera()  // center + zoom
+engine.resetNorth()                              // animate bearing/tilt back to north-up / flat
+
+// Rotate + tilt gestures are ON by default; toggle them (e.g. to lock the map while navigating):
+engine.setRotateGesturesEnabled(true); engine.setTiltGesturesEnabled(true)
+engine.setScrollGesturesEnabled(true); engine.setZoomGesturesEnabled(true)
+engine.setAllGesturesEnabled(false)
+
+engine.onCameraGesture { /* user grabbed the map: stop following, show "recenter" */ }
+engine.onCameraIdle { /* camera settled: read engine.cameraState(), refresh viewport layers */ }
+```
+
+### Own sources/layers — access to the raw MapLibre map + style
+
+The core never hard-codes app layers (chargers, bike-share, ZBE, 3D buildings, alternative
+routes, …). Instead it exposes the MapLibre `MapLibreMap` and `Style`, and a callback that
+**re-fires after every style (re)load** so your layers survive theme changes and reloads:
+
+```kotlin
+engine.onMapReady { map, style ->
+    // Re-add your OWN sources/layers here every time a new style loads.
+    style.addSource(GeoJsonSource("chargers", featureCollection))
+    style.addLayer(SymbolLayer("chargers-layer", "chargers").withProperties(/* … */))
+
+    // 3D buildings = a fill-extrusion layer the consumer adds on top of the style:
+    style.addLayer(FillExtrusionLayer("buildings-3d", "<your-building-source>").withProperties(/* … */))
+}
+// One-off reads (not for re-adding layers across reloads):
+val map: MapLibreMap? = engine.mapLibreMap
+val style: Style? = engine.currentStyle
+```
+
+### Custom styles (non-fixed)
+
+```kotlin
+engine.setStyle(jsonString)                 // arbitrary style JSON instead of the packaged PMTiles style
+engine.setStyleUri("file:///…/style.json")  // or asset://, http(s)://, maplibre://…
+engine.setDefaultStyle()                    // back to the packaged PMTiles multi-region style
+```
+
+The core's route/track/marker/user layers are re-added on top of whatever style is loaded,
+and `onMapReady` fires for it. A custom style owns its own sprites/glyphs/sources and its
+own day/night handling (`setTheme` then only re-renders the packaged style).
+
+### Refresh tiles / style
+
+```kotlin
+engine.refreshTiles()   // packaged style: pick up .pmtiles added/replaced/removed in tilesDir
+engine.reloadStyle()    // reapply the active style from scratch (packaged or custom)
+```
+
+Both re-fire `onMapReady`, so re-add your custom layers there.
+
+### Minimal navigation example (how UltimateMaps builds on top)
+
+```kotlin
+UltimateMapView(
+    modifier = Modifier.fillMaxSize(),
+    tilesDir = File(context.filesDir, "maps"),
+    theme = MapTheme.DARK,
+    onReady = { engine ->
+        engine.drawRoute(routePoints)          // the planned route line (core feature)
+        engine.onCameraGesture { following = false }   // user panned → stop auto-follow
+    },
+    onMapReady = { _, style ->
+        // UltimateMaps adds its own layer (e.g. EV chargers) and re-adds it on every reload.
+        style.addSource(GeoJsonSource("um-chargers", chargersFc))
+        style.addLayer(SymbolLayer("um-chargers-layer", "um-chargers"))
+    },
+)
+
+// …then on each GNSS fix while navigating, drive a tilted, bearing-locked follow camera:
+fun onFix(point: LatLon, headingDeg: Double) {
+    engine.setUserLocation(point)
+    if (following) {
+        engine.easeCamera(
+            CameraState(center = point, zoom = 17.5, bearing = headingDeg, tilt = 55.0),
+            durationMs = 400,
+        )
+    }
+}
 ```
 
 The map style assets (style JSON, sprites, Noto glyph PBFs) ship **inside the
