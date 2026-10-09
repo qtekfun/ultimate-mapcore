@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Library manifest. Namespace/package comes from build.gradle.kts (android.namespace).
+     No <application>: the host app declares its own. MyLocationButton requests the
+     ACCESS_FINE/COARSE_LOCATION permissions at runtime; the consuming app must declare
+     them in its own manifest. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

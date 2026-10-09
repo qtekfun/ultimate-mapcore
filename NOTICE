@@ -1,0 +1,38 @@
+ultimate-mapcore
+================
+
+Source code
+-----------
+Copyright (C) 2026 UltimateGadget contributors.
+Licensed under the GNU Affero General Public License v3.0 (see LICENSE).
+The Kotlin sources were extracted from UltimateGadget (a fork of Gadgetbridge,
+AGPL-3.0) and the rendering is adapted from UltimateMaps (same author).
+
+Bundled map assets (mapcore/src/main/assets/mapcore/)
+-----------------------------------------------------
+These data files are NOT covered by the AGPL-3.0 above; they keep the licenses
+of their upstream projects:
+
+* Fonts — fonts/Noto Sans {Regular,Medium,Italic}/*.pbf
+  Noto Sans, rendered to signed-distance-field glyph PBFs.
+  SIL Open Font License 1.1 (OFL-1.1).
+  https://github.com/notofonts/noto-fonts
+
+* Map style and sprites — style-dark.json, style-light.json, sprites/*
+  Derived from the Protomaps basemap style and sprite sheet.
+  BSD 3-Clause / MIT (Protomaps styles are published under a permissive license).
+  https://github.com/protomaps/basemaps
+
+* Map data (rendered at runtime from the .pmtiles the host app installs)
+  © OpenStreetMap contributors.
+  Open Database License (ODbL) 1.0.
+  https://www.openstreetmap.org/copyright
+  The style's own "attribution" field already carries
+  "© OpenStreetMap contributors"; any UI showing this map must keep that
+  attribution visible.
+
+Third-party runtime dependency
+------------------------------
+* MapLibre GL Native for Android (org.maplibre.gl:android-sdk:13.6.1)
+  BSD 2-Clause. https://github.com/maplibre/maplibre-native
+  Exposed as an `api` dependency; consumers inherit it transitively.
