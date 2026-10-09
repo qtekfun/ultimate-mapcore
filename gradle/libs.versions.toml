@@ -25,7 +25,7 @@ androidx-compose-material-icons-extended = { group = "androidx.compose.material"
 
 maplibre-android = { group = "org.maplibre.gl", name = "android-sdk", version.ref = "maplibre" }
 
-junit = { group = "junit", name = "junit", version.ref = "junit" }
+junit4 = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]
 android-library = { id = "com.android.library", version.ref = "android-gradle-plugin" }

@@ -89,6 +89,11 @@ val style: Style? = engine.currentStyle
 ```kotlin
 engine.setStyle(jsonString)                 // arbitrary style JSON instead of the packaged PMTiles style
 engine.setStyleUri("file:///…/style.json")  // or asset://, http(s)://, maplibre://…
+// Construction options for a consumer with its own style and layers:
+//   UltimateMapEngine(ctx, tilesDir, MapEngineOptions(autoLoadStyle = false,   // load nothing until setStyle*/setDefaultStyle
+//                                                    addCoreLayers = false,    // no core route/marker/user layers
+//                                                    mapOptions = MapLibreMapOptions.createFromAttributes(ctx).attributionEnabled(false)))
+// Camera padding (a bottom sheet, a banner): CameraState(..., padding = CameraPadding(l, t, r, b)); CameraPadding.NONE clears it.
 engine.setDefaultStyle()                    // back to the packaged PMTiles multi-region style
 ```
 

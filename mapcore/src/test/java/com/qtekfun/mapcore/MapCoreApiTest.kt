@@ -64,4 +64,21 @@ class MapCoreApiTest {
         assertEquals("roads", MultiRegionStyle.layerId("roads", 0))
         assertEquals("roads@2", MultiRegionStyle.layerId("roads", 2))
     }
+
+    @Test
+    fun cameraPaddingIsOptionalAndNoneClearsIt() {
+        val s = CameraState(LatLon(0.0, 0.0), 12.0)
+        assertEquals(null, s.padding)
+        val padded = s.copy(padding = CameraPadding(0.0, 400.0, 0.0, 0.0))
+        assertEquals(400.0, padded.padding!!.top, 0.0)
+        assertEquals(CameraPadding(0.0, 0.0, 0.0, 0.0), CameraPadding.NONE)
+    }
+
+    @Test
+    fun engineOptionsDefaultToTheSimpleViewerBehaviour() {
+        val o = MapEngineOptions()
+        assertEquals(true, o.autoLoadStyle)
+        assertEquals(true, o.addCoreLayers)
+        assertEquals(null, o.mapOptions)
+    }
 }
