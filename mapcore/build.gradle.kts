@@ -5,6 +5,11 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Coordinates so consumers (UltimateGadget, UltimateMaps) can depend on "com.qtekfun:mapcore",
+// resolved locally through a Gradle composite build (includeBuild) or, later, a published artifact.
+group = "com.qtekfun"
+version = "0.1.0"
+
 // Keep in lock-step with UltimateGadget's app/build.gradle (JDK 21 toolchain, JVM 17 bytecode).
 java {
     toolchain.languageVersion = JavaLanguageVersion.of(21)
